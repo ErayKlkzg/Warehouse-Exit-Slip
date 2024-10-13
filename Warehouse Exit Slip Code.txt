@@ -1,0 +1,576 @@
+*&---------------------------------------------------------------------*
+*& Include          ZIT_MM_AMBAR_CIKIS_FISI_CLS
+*&---------------------------------------------------------------------*
+CLASS cl_main IMPLEMENTATION.
+  METHOD create_instance.
+    IF mo_instance IS INITIAL.
+      mo_instance  = NEW cl_main( ).
+    ENDIF.
+    r_obj = mo_instance.
+
+    IF mo_msg IS INITIAL.
+      mo_msg = NEW zcl_message( ).
+    ENDIF.
+  ENDMETHOD.
+
+  METHOD set_seltab.
+    DATA: lr_line    TYPE REF TO data,
+          lv_field   TYPE lvc_fname,
+          lv_selname TYPE rsscr_name.
+
+    DATA: lt_criteria TYPE rsparams_tt.
+
+    FIELD-SYMBOLS: <fs_soption>   TYPE table,
+                   <fs_parameter> TYPE any.
+
+    CALL FUNCTION 'RS_REFRESH_FROM_SELECTOPTIONS'
+      EXPORTING
+        curr_report     = iv_repid
+      TABLES
+        selection_table = lt_criteria
+      EXCEPTIONS
+        not_found       = 1
+        no_report       = 2
+        OTHERS          = 3.
+
+    LOOP AT lt_criteria ASSIGNING FIELD-SYMBOL(<fs_criteria>)
+                                  WHERE low  IS NOT INITIAL OR
+                                        high IS NOT INITIAL.
+      IF lv_selname NE <fs_criteria>-selname.
+        lv_selname = <fs_criteria>-selname.
+        UNASSIGN <fs_soption>.
+      ENDIF.
+      lv_field = 'ME->MS_STAB-' && <fs_criteria>-selname.
+      CASE <fs_criteria>-kind.
+        WHEN 'P'.
+          ASSIGN (lv_field) TO <fs_parameter>.
+          CHECK sy-subrc = 0.
+          <fs_parameter> = <fs_criteria>-low.
+        WHEN 'S'.
+          ASSIGN (lv_field) TO <fs_soption>.
+          CHECK sy-subrc = 0.
+          CREATE DATA lr_line LIKE LINE OF <fs_soption>.
+          CHECK sy-subrc = 0.
+          ASSIGN lr_line->* TO FIELD-SYMBOL(<fs_soption_line>).
+          CHECK sy-subrc = 0.
+
+          MOVE-CORRESPONDING <fs_criteria> TO <fs_soption_line>.
+          APPEND <fs_soption_line> TO <fs_soption>.
+      ENDCASE.
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD at_selection_screen_output.
+
+  ENDMETHOD.
+  METHOD at_selection_screen_valreq.
+
+  ENDMETHOD.
+
+  METHOD run.
+    me->check_selection(
+      EXCEPTIONS
+        selection_error = 1 ).
+
+    CHECK sy-subrc EQ 0.
+
+    me->read_data(
+      EXCEPTIONS
+        no_data_found = 1 ).
+
+    CHECK sy-subrc EQ 0.
+
+    me->display( ).
+  ENDMETHOD.
+
+  METHOD check_selection.
+  ENDMETHOD.
+
+  METHOD read_data.
+    TYPES : BEGIN OF lty_renk,
+              mblnr TYPE mseg-mblnr,
+              mjahr TYPE mseg-mjahr,
+              charg TYPE mseg-charg,
+              bstnk TYPE vbak-bstnk,
+              posex TYPE vbap-posex,
+              renk  TYPE vbap-zit_renk,
+            END OF lty_renk.
+
+
+    DATA : lr_awkey    TYPE RANGE OF /dsl/es10_t012-awkey,
+           lr_orgu     TYPE RANGE OF zip_sd_orgusekli-zzip_orgu_sekli,
+           ls_address  TYPE bapiaddr3,
+           lt_return   TYPE bapiret2_t,
+           lv_sayac    TYPE i,
+           ls_alv_data LIKE LINE OF mt_alv_data,
+           lt_renk     TYPE TABLE OF lty_renk.
+
+
+    SELECT mseg~mblnr,mseg~mjahr,mseg~zeile,mseg~matnr,mseg~lgort,mseg~charg,mseg~ebeln,
+           mseg~budat_mkpf,mseg~usnam_mkpf,mseg~kdauf,mseg~kdpos,mseg~lifnr,mseg~menge,mseg~meins,
+           concat( mseg~mblnr,mseg~mjahr ) AS awkey,mkpf~bktxt
+      FROM mseg
+      INNER JOIN mkpf ON mkpf~mblnr EQ mseg~mblnr
+                     AND mkpf~mjahr EQ mseg~mjahr
+      WHERE mseg~mblnr IN @s_mblnr
+        AND mseg~mjahr IN @s_mjahr
+        AND mseg~lgort IN @s_lgort
+        AND mseg~budat_mkpf IN @s_budat
+        AND mseg~bwart EQ '541'
+        AND mseg~xauto EQ @space
+      INTO TABLE @DATA(lt_mseg).
+    IF sy-subrc NE 0.
+      MESSAGE s208(00) WITH TEXT-002 DISPLAY LIKE 'E'.
+      RAISE no_data_found.
+    ENDIF.
+
+    SELECT matnr,maktx
+      FROM makt
+      INTO TABLE @DATA(lt_makt)
+      FOR ALL ENTRIES IN @lt_mseg
+      WHERE matnr EQ @lt_mseg-matnr
+        AND spras EQ @sy-langu.
+
+    SELECT brkod,sales_order,sales_item,charg,aufnr,arbpl,fbrut,mblnr,mjahr
+      FROM zit_pp_t_barkod
+      INTO TABLE @DATA(lt_barkod)
+      FOR ALL ENTRIES IN @lt_mseg
+      WHERE mblnr EQ @lt_mseg-mblnr
+        AND mjahr EQ @lt_mseg-mjahr
+        AND charg EQ @lt_mseg-charg.
+
+    SELECT *
+      FROM /dsl/es10_t010
+      INTO TABLE @DATA(lt_plaka)
+      FOR ALL ENTRIES IN @lt_mseg
+      WHERE rfkey EQ @lt_mseg-mblnr
+        AND rfgjr EQ @lt_mseg-mjahr.
+
+    lr_awkey = VALUE #( FOR ls_line IN lt_mseg ( sign   = 'I'
+                                                 option = 'EQ'
+                                                 low    = ls_line-awkey ) ).
+
+    SORT lr_awkey BY sign option low.
+    DELETE ADJACENT DUPLICATES FROM lr_awkey.
+
+    SELECT awtyp,awkey,sqnum,sfrnm && ' ' && sfrfm AS sofor
+      FROM /dsl/es10_t012
+      INTO TABLE @DATA(lt_sofor)
+      WHERE awtyp EQ 'MKPF'
+        AND awkey IN @lr_awkey.
+
+    SELECT lifnr,name1
+      FROM lfa1
+      INTO TABLE @DATA(lt_lfa1)
+      FOR ALL ENTRIES IN @lt_mseg
+      WHERE lifnr EQ @lt_mseg-lifnr.
+
+    SELECT vbeln,bstnk
+      FROM vbak
+      INTO TABLE @DATA(lt_vbak)
+      FOR ALL ENTRIES IN @lt_mseg
+      WHERE vbeln EQ @lt_mseg-kdauf.
+
+    SELECT vbeln,posnr,zit_teslimyeri,zzip_pus_fein,zzip_lyc_denye,
+           zzip_iplik_uzunlugu,zzip_iplik_uznlk_brm,zzip_orgu_sekli,posex,zit_renk,
+           zzip_ham_gramaj
+      FROM vbap
+      INTO TABLE @DATA(lt_vbap)
+      FOR ALL ENTRIES IN @lt_mseg
+      WHERE vbeln EQ @lt_mseg-kdauf
+        AND posnr EQ @lt_mseg-kdpos.
+
+    lr_orgu = VALUE #( FOR ls_line2 IN lt_vbap ( sign   = 'I'
+                                                 option = 'EQ'
+                                                 low    = ls_line2-zzip_orgu_sekli ) ).
+
+    IF lr_orgu IS NOT INITIAL.
+      SELECT *
+        FROM zip_sd_orgusekli
+        INTO TABLE @DATA(lt_orgu)
+        WHERE zzip_orgu_sekli IN @lr_orgu.
+    ENDIF.
+
+    SELECT matnr,mtart
+      FROM mara
+      INTO TABLE @DATA(lt_mara)
+      FOR ALL ENTRIES IN @lt_mseg
+      WHERE matnr EQ @lt_mseg-matnr.
+
+    IF lt_barkod IS NOT INITIAL.
+      SELECT rsnum,rspos,rsart,charg,aufnr,matnr,bdmng,posnr
+        FROM resb
+        INTO TABLE @DATA(lt_resb)
+        FOR ALL ENTRIES IN @lt_barkod
+        WHERE aufnr EQ @lt_barkod-aufnr
+        AND enmng GT 0
+        AND xwaok EQ 'X'
+        AND charg NE @space
+        AND aufnr NE @space.
+
+      SORT  lt_resb BY  matnr aufnr bdmng DESCENDING.
+      DELETE ADJACENT DUPLICATES FROM lt_resb COMPARING matnr aufnr.
+      SORT  lt_resb BY posnr ASCENDING.
+    ENDIF.
+
+
+    LOOP AT lt_mseg INTO DATA(ls_mseg).
+      CLEAR ls_alv_data.
+      ls_alv_data-mblnr      = ls_mseg-mblnr.
+      ls_alv_data-mjahr      = ls_mseg-mjahr.
+      ls_alv_data-ebeln      = ls_mseg-ebeln.
+      ls_alv_data-matnr      = ls_mseg-matnr.
+      ls_alv_data-lgort      = ls_mseg-lgort.
+      ls_alv_data-charg      = ls_mseg-charg.
+      ls_alv_data-meins      = ls_mseg-meins.
+      ls_alv_data-menge      = ls_mseg-menge.
+      ls_alv_data-budat_mkpf = ls_mseg-budat_mkpf.
+      ls_alv_data-usnam_mkpf = ls_mseg-usnam_mkpf.
+      ls_alv_data-lifnr      = ls_mseg-lifnr.
+      ls_alv_data-bstnk      = VALUE #( lt_vbak[ vbeln = ls_mseg-kdauf ]-bstnk OPTIONAL ).
+      ls_alv_data-mtart      = VALUE #( lt_mara[ matnr = ls_mseg-matnr ]-mtart OPTIONAL ).
+      ls_alv_data-maktx      = VALUE #( lt_makt[ matnr = ls_mseg-matnr ]-maktx OPTIONAL ).
+      ls_alv_data-zzplaka    = VALUE #( lt_plaka[ rfkey = ls_mseg-mblnr
+                                                  rfgjr = ls_mseg-mjahr ]-arcpl OPTIONAL ).
+      ls_alv_data-zzsofor    = VALUE #( lt_sofor[ awkey = ls_mseg-awkey ]-sofor OPTIONAL ).
+      ls_alv_data-name1      = VALUE #( lt_lfa1[ lifnr = ls_mseg-lifnr ]-name1 OPTIONAL ).
+      DATA(ls_vbap)       = VALUE #( lt_vbap[ vbeln = ls_mseg-kdauf
+                                              posnr = ls_mseg-kdpos ] OPTIONAL ).
+      ls_alv_data-zteslimyeri          = ls_vbap-zit_teslimyeri.
+      ls_alv_data-zzip_pus_fein        = ls_vbap-zzip_pus_fein.
+      ls_alv_data-zzip_lyc_denye       = ls_vbap-zzip_lyc_denye.
+      ls_alv_data-zzip_iplik_uzunlugu  = ls_vbap-zzip_iplik_uzunlugu.
+      ls_alv_data-zzip_iplik_uznlk_brm = ls_vbap-zzip_iplik_uznlk_brm.
+      ls_alv_data-zzip_orgu_sekli      = ls_vbap-zzip_orgu_sekli.
+      ls_alv_data-zzip_ham_gramaj      = ls_vbap-zzip_ham_gramaj.
+      ls_alv_data-posex                = ls_vbap-posex.
+
+      ls_alv_data-zzip_orgu_seklit     = VALUE #( lt_orgu[ zzip_orgu_sekli = ls_alv_data-zzip_orgu_sekli ]-zzip_orgu_seklit OPTIONAL ).
+
+      CALL FUNCTION 'BAPI_USER_GET_DETAIL'
+        EXPORTING
+          username      = ls_alv_data-usnam_mkpf
+          cache_results = 'X'
+        IMPORTING
+          address       = ls_address
+        TABLES
+          return        = lt_return.
+
+      APPEND INITIAL LINE TO lt_renk REFERENCE INTO DATA(lrs_renk).
+      lrs_renk->mblnr = ls_alv_data-mblnr.
+      lrs_renk->mjahr = ls_alv_data-mjahr.
+      lrs_renk->charg = ls_alv_data-charg.
+      lrs_renk->posex = ls_alv_data-posex.
+      lrs_renk->bstnk = ls_alv_data-bstnk.
+      lrs_renk->renk  = ls_vbap-zit_renk.
+
+      ls_alv_data-usnam_name = ls_address-fullname.
+      COLLECT ls_alv_data INTO mt_alv_data.
+    ENDLOOP.
+
+    SORT lt_renk BY mblnr mjahr charg posex bstnk renk.
+    DELETE ADJACENT DUPLICATES FROM lt_renk.
+
+    LOOP AT mt_alv_data ASSIGNING FIELD-SYMBOL(<fs_alv>).
+      "Rulo
+      LOOP AT lt_barkod INTO DATA(ls_barkod) WHERE mblnr EQ <fs_alv>-mblnr
+                                               AND mjahr EQ <fs_alv>-mjahr
+                                               AND charg EQ <fs_alv>-charg.
+        ADD 1 TO <fs_alv>-rulo.
+        <fs_alv>-brgew = <fs_alv>-brgew + ls_barkod-fbrut.
+      ENDLOOP.
+
+      "Lot
+      LOOP AT lt_resb INTO DATA(ls_resb) WHERE aufnr EQ ls_barkod-aufnr.
+        IF <fs_alv>-lot IS INITIAL.
+          <fs_alv>-lot = ls_resb-charg.
+        ELSE.
+          <fs_alv>-lot = <fs_alv>-lot && ' / ' && ls_resb-charg.
+        ENDIF.
+      ENDLOOP.
+
+      "Renk
+      LOOP AT lt_renk INTO DATA(ls_renk) WHERE mblnr EQ <fs_alv>-mblnr
+                                           AND mjahr EQ <fs_alv>-mjahr
+                                           AND charg EQ <fs_alv>-charg
+                                           AND posex EQ <fs_alv>-posex
+                                           AND bstnk EQ <fs_alv>-bstnk.
+        IF <fs_alv>-zit_renk IS INITIAL.
+          <fs_alv>-zit_renk = ls_renk-renk.
+        ELSE.
+          <fs_alv>-zit_renk = <fs_alv>-zit_renk && '-' && ls_renk-renk.
+        ENDIF.
+      ENDLOOP.
+
+    ENDLOOP.
+
+*    "Brüt Miktar Oranlama
+*    LOOP AT mt_alv_data ASSIGNING FIELD-SYMBOL(<fs_alv>) GROUP BY ( bstnk = <fs_alv>-bstnk
+*                                                                    posex = <fs_alv>-posex ) ASSIGNING FIELD-SYMBOL(<fs_group>).
+*      LOOP AT GROUP <fs_group> ASSIGNING FIELD-SYMBOL(<fs_group_line>).
+*        ADD 1 TO lv_sayac.
+*      ENDLOOP.
+*
+*      IF lv_sayac GT 1.
+*        LOOP AT GROUP <fs_group> ASSIGNING <fs_group_line>.
+*          <fs_group_line>-brgew = <fs_group_line>-brgew / lv_sayac.
+*          <fs_group_line>-fark  = <fs_group_line>-brgew - <fs_group_line>-menge.
+*        ENDLOOP.
+*      ENDIF.
+*      CLEAR lv_sayac.
+*    ENDLOOP.
+
+  ENDMETHOD.
+  METHOD print.
+    DATA : lv_fm_name TYPE rs38l_fnam,
+           lt_kalem   TYPE TABLE OF zit_sd_s_iplik_amb_kalem.
+
+    mo_grid1->get_selected_rows(
+      IMPORTING
+        et_row_no     = DATA(lt_rows)
+    ).
+
+    DESCRIBE TABLE lt_rows LINES DATA(lv_line).
+    IF lv_line GT 1.
+      MESSAGE 'Lütfen Tek Satır Seçiniz.' TYPE 'E'.
+      RETURN.
+    ENDIF.
+
+    DATA(ls_print_data) = VALUE #( mt_alv_data[ lt_rows[ 1 ]-row_id ] OPTIONAL ).
+
+    CALL FUNCTION 'SSF_FUNCTION_MODULE_NAME'
+      EXPORTING
+        formname           = 'ZIT_MM_EMTIA_KUMAS_FIS'
+      IMPORTING
+        fm_name            = lv_fm_name
+      EXCEPTIONS
+        no_form            = 1
+        no_function_module = 2
+        OTHERS             = 3.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+              WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ENDIF.
+
+    APPEND INITIAL LINE TO lt_kalem.
+    CALL FUNCTION lv_fm_name
+      EXPORTING
+        wa_baslik        = ls_print_data
+      TABLES
+        tb_kalem         = lt_kalem
+      EXCEPTIONS
+        formatting_error = 1
+        internal_error   = 2
+        send_error       = 3
+        user_canceled    = 4
+        OTHERS           = 5.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+         WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ENDIF.
+
+  ENDMETHOD.
+  METHOD display.
+    CALL SCREEN 100.
+  ENDMETHOD.
+
+  METHOD pbo.
+    CASE iv_dynnr.
+      WHEN '0100'.
+        SET PF-STATUS 'PF100'.
+        SET TITLEBAR 'T100'.
+
+        IF me->mo_grid1 IS INITIAL.
+          CREATE OBJECT me->mo_container
+            EXPORTING
+              repid                       = sy-repid
+              dynnr                       = iv_dynnr
+              side                        = mo_container->dock_at_left
+              extension                   = mo_container->ws_maximizebox
+            EXCEPTIONS
+              cntl_error                  = 1
+              cntl_system_error           = 2
+              create_error                = 3
+              lifetime_error              = 4
+              lifetime_dynpro_dynpro_link = 5
+              OTHERS                      = 6.
+
+          CREATE OBJECT me->mo_grid1
+            EXPORTING
+              i_parent = me->mo_container.
+
+          me->ms_layout-zebra      = 'X'.
+          me->ms_layout-sel_mode   = 'A'.
+          me->ms_layout-no_rowins  = 'X'.
+          me->ms_layout-edit_mode  = 'A'.
+          me->ms_layout-cwidth_opt = 'X'.
+*          me->ms_layout-grid_title = 'Template Program'.
+
+          me->fieldcat( 'ZIT_MM_S_AMBAR_FISI_ALV' ).
+
+          me->ms_variant-report   = sy-repid.
+          me->ms_variant-handle   = 1.
+          me->ms_variant-username = sy-uname.
+
+          SET HANDLER: me->handle_hotspot_click FOR me->mo_grid1,
+                       me->handle_double_click  FOR me->mo_grid1,
+                       me->handle_user_command  FOR me->mo_grid1,
+                       me->handle_toolbar       FOR me->mo_grid1.
+
+
+          CALL METHOD me->mo_grid1->set_table_for_first_display
+            EXPORTING
+              i_bypassing_buffer = 'X'
+              is_layout          = me->ms_layout
+              is_variant         = me->ms_variant
+              i_save             = 'A'
+            CHANGING
+              it_fieldcatalog    = me->mt_fieldcat
+              it_outtab          = me->mt_alv_data.
+
+          CALL METHOD me->mo_grid1->set_toolbar_interactive( ).
+        ELSE.
+          me->mo_grid1->refresh_table_display(
+*            EXPORTING
+*              is_stable      =                  " With Stable Rows/Columns
+*              i_soft_refresh =                  " Without Sort, Filter, etc.
+*            EXCEPTIONS
+*              finished       = 1                " Display was Ended (by Export)
+*              others         = 2
+          ).
+          IF sy-subrc <> 0.
+*           MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+*             WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+          ENDIF.
+        ENDIF.
+
+    ENDCASE.
+  ENDMETHOD.
+
+  METHOD fieldcat.
+    CALL FUNCTION 'LVC_FIELDCATALOG_MERGE'
+      EXPORTING
+        i_structure_name       = iv_str
+        i_client_never_display = 'X'
+        i_bypassing_buffer     = 'X'
+      CHANGING
+        ct_fieldcat            = me->mt_fieldcat[]
+      EXCEPTIONS
+        inconsistent_interface = 1
+        program_error          = 2
+        OTHERS                 = 3.
+
+    LOOP AT me->mt_fieldcat INTO DATA(ls_fcat).
+      CASE ls_fcat-fieldname.
+        WHEN 'BOX'.
+          ls_fcat-edit = 'X'.
+        WHEN 'ZIT_RENK'.
+*          ls_fcat-tech = 'X'.
+        WHEN 'LOT'.
+*          ls_fcat-tech = 'X'.
+          ls_fcat-coltext    = TEXT-003.
+          ls_fcat-scrtext_l  = TEXT-003.
+          ls_fcat-scrtext_m  = TEXT-003.
+          ls_fcat-scrtext_s  = TEXT-003.
+        WHEN 'RULO'.
+          ls_fcat-coltext    = TEXT-004.
+          ls_fcat-scrtext_l  = TEXT-004.
+          ls_fcat-scrtext_m  = TEXT-004.
+          ls_fcat-scrtext_s  = TEXT-004.
+        WHEN 'ZEILE' OR 'FARK'.
+          ls_fcat-tech = 'X'.
+      ENDCASE.
+      MODIFY me->mt_fieldcat FROM ls_fcat.
+    ENDLOOP.
+
+  ENDMETHOD.
+
+  METHOD pai.
+    DATA(lv_ucomm) = sy-ucomm.
+    CLEAR sy-ucomm.
+
+    CASE lv_ucomm.
+      WHEN 'BACK'.
+        SET SCREEN 0.
+        LEAVE SCREEN.
+      WHEN 'SAVE'.
+        me->save( ).
+      WHEN 'PRINT'.
+        print( ).
+    ENDCASE.
+  ENDMETHOD.
+
+  METHOD save.
+
+  ENDMETHOD.
+
+  METHOD refresh_table_display.
+    DATA: ls_stable TYPE lvc_s_stbl VALUE 'XX'.
+
+    ir_grid->get_frontend_layout(
+      IMPORTING
+        es_layout = DATA(ls_layout)
+    ).
+
+    ls_layout-cwidth_opt = 'X'.
+
+    ir_grid->set_frontend_layout( is_layout = ls_layout ).
+
+
+    ir_grid->refresh_table_display(
+      EXPORTING
+        is_stable      = ls_stable
+        i_soft_refresh = 'X'
+      EXCEPTIONS
+        finished       = 1
+        OTHERS         = 2 ).
+  ENDMETHOD.
+
+  METHOD handle_double_click.
+    CASE sender->cur_event->event_src->get_name( ).
+      WHEN 'RAD1'.
+        "1. radio butona tıklandı
+      WHEN 'RAD2'.
+        "2. radio butona tıklandı
+    ENDCASE.
+  ENDMETHOD.
+
+  METHOD handle_hotspot_click.
+    READ TABLE me->mt_alv_data ASSIGNING FIELD-SYMBOL(<fs_data>) INDEX e_row_id-index.
+    ASSIGN COMPONENT e_column_id-fieldname OF STRUCTURE <fs_data> TO FIELD-SYMBOL(<fs_value>).
+
+    CASE e_column_id-fieldname.
+      WHEN 'MATNR'.
+      WHEN OTHERS.
+    ENDCASE.
+
+    me->refresh_table_display( me->mo_grid1 ).
+  ENDMETHOD.
+
+  METHOD handle_toolbar.
+*    DATA: ls_toolbar TYPE stb_button.
+*
+*    CLEAR ls_toolbar.
+*    MOVE 'FUNC1'           TO ls_toolbar-function.
+*    MOVE  icon_select_all  TO ls_toolbar-icon.
+*    MOVE  'Demo Button1'   TO ls_toolbar-quickinfo.
+*    MOVE  'Demo Button1'   TO ls_toolbar-text.
+*    APPEND ls_toolbar      TO e_object->mt_toolbar.
+*
+*    CLEAR ls_toolbar.
+*    MOVE 'FUNC2'            TO ls_toolbar-function.
+*    MOVE  icon_deselect_all TO ls_toolbar-icon.
+*    MOVE  'Demo Button2'    TO ls_toolbar-quickinfo.
+*    MOVE  'Demo Button2'    TO ls_toolbar-text.
+*    APPEND ls_toolbar       TO e_object->mt_toolbar.
+  ENDMETHOD.
+
+  METHOD handle_user_command.
+    CASE e_ucomm.
+      WHEN 'BACK'.
+      WHEN OTHERS.
+    ENDCASE.
+
+    me->refresh_table_display( sender ).
+  ENDMETHOD.
+ENDCLASS.
